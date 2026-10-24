@@ -1,7 +1,7 @@
 {
   "name": "led_defender",
-  "version": "1.0.0",
-  "description": "LED Defender local game for WLED ESP32",
+  "version": "2.0.0",
+  "description": "LED Defender levels, portals, maps and embedded remote for WLED",
   "build": {"libArchive": false},
   "frameworks": "arduino",
   "platforms": "espressif32"

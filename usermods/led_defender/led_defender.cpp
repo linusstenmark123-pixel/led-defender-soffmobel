@@ -1,6 +1,5 @@
-// LED Defender 1.1 - native game, WLED 16.0.1 ESP32 (unverified hardware build).
-// Important: Does NOT change current WLED state, segments, colors, presets or K4.
-// Draws an overlay ONLY while playing. Stop => immediate normal WLED output.
+// LED Defender 2.0: native WLED overlay, no modification of presets, segments or K4.
+// Uses same known-good WLED v0.16.0.1 usermod integration as LED Defender v1.1.
 #include "wled.h"
 #include <Preferences.h>
 #include "DefenderCore.h"
@@ -8,129 +7,176 @@
 
 class LedDefenderMod : public Usermod {
   DefenderCore game;
-  uint32_t frameMs = 0, lastClientMs = 0;
-  uint32_t highscore = 0;
-  bool initialized = false;
-  static constexpr uint32_t CLIENT_TIMEOUT_MS = 15000;
+  uint32_t frameMs=0,lastClientMs=0;
+  uint32_t highscore[2]={0,0};
+  uint16_t highestLevel[2]={1,1};
+  uint8_t highestCombo[2]={0,0};
+  bool initialized=false;
+  static constexpr uint32_t CLIENT_TIMEOUT_MS=15000;
 
-  void saveHighscore() {
-    if (!game.recordPending) return;
-    game.recordPending = false;
-    if (game.score <= (int32_t)highscore) return;
-    highscore = game.score;
-    Preferences prefs;
-    if (prefs.begin("leddefender", false)) {
-      prefs.putUInt("best", highscore);
-      prefs.end();
+  void saveRecords() {
+    if(!game.recordPending)return;
+    game.recordPending=false;
+    const int m=game.map;
+    bool changed=false;
+    if(game.score>(int32_t)highscore[m]){highscore[m]=game.score;changed=true;}
+    if(game.level>highestLevel[m]){highestLevel[m]=game.level;changed=true;}
+    if(game.bestCombo>highestCombo[m]){highestCombo[m]=game.bestCombo;changed=true;}
+    if(!changed)return;
+    Preferences p;
+    if(p.begin("leddefender",false)){
+      p.putUInt(m?"best2":"best",highscore[m]);
+      p.putUShort(m?"level2":"level1",highestLevel[m]);
+      p.putUChar(m?"combo2":"combo1",highestCombo[m]);
+      p.end();
     }
   }
+  static uint32_t color(uint8_t i) {
+    static constexpr uint32_t c[5]={0x17D8FF,0xFFD050,0xB579FF,0x2EE6A6,0xFF4C64};
+    return c[i<5?i:4];
+  }
+  void dot(int x,uint32_t c){if(x>=0 && x<DefenderCore::LED_COUNT)strip.setPixelColor(x,c);}
 
 public:
   void setup() override {
-    Preferences prefs;
-    if (prefs.begin("leddefender", true)) {
-      highscore = prefs.getUInt("best", 0);
-      prefs.end();
+    Preferences p;
+    if(p.begin("leddefender",true)) {
+      highscore[0]=p.getUInt("best",0); // v1.1 compatible
+      highscore[1]=p.getUInt("best2",0);
+      highestLevel[0]=p.getUShort("level1",1);
+      highestLevel[1]=p.getUShort("level2",1);
+      highestCombo[0]=p.getUChar("combo1",0);
+      highestCombo[1]=p.getUChar("combo2",0);
+      p.end();
     }
-    // Embedded controller: http://<WLED-IP>/defender
-    server.on("/defender", HTTP_GET, [](AsyncWebServerRequest *request) {
-      AsyncWebServerResponse *response = request->beginResponse_P(
-        200, "text/html; charset=utf-8", LEDDEFENDER_PAGE_GZ, LEDDEFENDER_PAGE_GZ_LEN);
-      response->addHeader("Content-Encoding", "gzip");
-      response->addHeader("Cache-Control", "no-store");
+    server.on("/defender",HTTP_GET,[](AsyncWebServerRequest *request){
+      AsyncWebServerResponse *response=request->beginResponse_P(
+        200,"text/html; charset=utf-8",LEDDEFENDER_PAGE_GZ,LEDDEFENDER_PAGE_GZ_LEN);
+      response->addHeader("Content-Encoding","gzip");
+      response->addHeader("Cache-Control","no-store");
       request->send(response);
     });
-    initialized = true;
+    initialized=true;
   }
-
   void loop() override {
-    if (!initialized) return;
-    uint32_t ms = millis();
-    if (game.phase == DefenderCore::PLAYING) {
-      // If phone is closed/disconnected, stop automatically; never leave light locked in game.
-      if ((uint32_t)(ms - lastClientMs) > CLIENT_TIMEOUT_MS) {
-        game.stop();
-        strip.trigger();
+    if(!initialized)return;
+    const uint32_t ms=millis();
+    if(game.phase==DefenderCore::PLAYING) {
+      if((uint32_t)(ms-lastClientMs)>CLIENT_TIMEOUT_MS){
+        game.stop();strip.trigger();
       } else {
         game.tick(ms);
-        if (game.phase != DefenderCore::PLAYING) strip.trigger();
-        if ((uint32_t)(ms - frameMs) >= 25) {
-          frameMs = ms;
-          strip.trigger();  // WLED LED service owns strip.show().
-        }
+        if(game.phase!=DefenderCore::PLAYING)strip.trigger();
+        if((uint32_t)(ms-frameMs)>=25){frameMs=ms;strip.trigger();}
       }
     }
-    saveHighscore();
+    saveRecords();
   }
-
-  // Called by WLED just before LED refresh, after all segment effects and layers.
   void handleOverlayDraw() override {
-    if (game.phase != DefenderCore::PLAYING) return;
-    // The furniture is configured with exactly 291 LEDs, indices 0..290.
-    for (unsigned i = 0; i < 291; ++i) strip.setPixelColor(i, 0);
-    for (unsigned i = DefenderCore::FIRST; i <= DefenderCore::LAST; i += 10)
-      strip.setPixelColor(i, 0x030811);
-    const uint32_t colors[2] = {0x17D8FF, 0xFFD050};
-    for (const auto &enemy : game.enemies) if (enemy.alive) {
-      const int pixel = DefenderCore::FIRST + (int)roundf(enemy.x);
-      if (pixel >= DefenderCore::FIRST && pixel < DefenderCore::LAST) {
-        strip.setPixelColor(pixel, colors[enemy.color]);
-        if (pixel > DefenderCore::FIRST)
-          strip.setPixelColor(pixel - 1, enemy.color ? 0x46310A : 0x05323B);
+    if(game.phase!=DefenderCore::PLAYING)return;
+    // WLED remains in control of GPIO16 and WS2815's output timing.
+    // The game temporarily covers all 291 LEDs; effects resume when game stops.
+    for(int i=0;i<DefenderCore::LED_COUNT;++i)dot(i,0);
+    const int l=game.left(),r=game.right();
+    for(int i=l;i<=r;i+=10)dot(i,0x030811);
+    const bool map2=game.map==1;
+    const int home=(int)game.base();
+    dot(home,game.flashTime>0?0xFF173D:0xB63865);
+    if(map2){dot(home-1,0x401323);dot(home+1,0x401323);}
+
+    // Portal openings are black with luminous rims; bridge is the health/timer bar.
+    for(const auto &p:game.portals)if(p.active) {
+      const uint32_t c=p.kind==DefenderCore::TIMED?0xA05AFF:0xFF8A28;
+      const int entry=(int)roundf(p.entry),exit=(int)roundf(p.exit);
+      dot(entry-1,c);dot(entry,0);dot(entry+1,c);
+      dot(exit-1,c);dot(exit,0);dot(exit+1,c);
+      int filled=p.kind==DefenderCore::BREAKABLE?p.hp:
+        int(ceilf(float(p.count)*p.remaining/p.duration));
+      if(filled>p.count)filled=p.count;
+      for(int i=0;i<p.count;++i)dot(p.barStart+i,i<filled?c:0);
+    }
+
+    // Trails, enemies, shots, and impact flashes drawn on top of portals.
+    for(const auto &e:game.enemies)if(e.alive) {
+      int x=(int)roundf(e.x);
+      uint32_t trail=e.color==0?0x063644:e.color==1?0x493511:
+        e.color==2?0x2A1643:0x08402D;
+      dot(x-e.direction,trail);
+      if(e.kind==DefenderCore::ARMOR||e.kind==DefenderCore::ELITE){
+        dot(x+e.direction,e.hp>=2?0xFFFFFF:0x553535);
       }
+      if(e.kind==DefenderCore::SPLITTER){dot(x-e.direction*2,0x6D26A3);}
+      dot(x,color(e.color));
     }
-    for (const auto &bullet : game.shots) if (bullet.alive) {
-      const int pixel = DefenderCore::FIRST + (int)roundf(bullet.x);
-      if (pixel >= DefenderCore::FIRST && pixel < DefenderCore::LAST)
-        strip.setPixelColor(pixel, colors[bullet.color]);
+    for(const auto &s:game.shots)if(s.alive){
+      int x=(int)roundf(s.x);
+      dot(x-s.direction,0x333333);
+      dot(x,color(s.color));
     }
-    strip.setPixelColor(DefenderCore::LAST, game.blinkTime > 0 ? 0xFF173D : 0xC43A66);
+    for(const auto &b:game.blasts)if(b.alive){
+      int x=(int)roundf(b.x);
+      dot(x,color(b.color));
+      if(b.time>0.17f){dot(x-1,0x555555);dot(x+1,0x555555);}
+    }
+    if(game.waveCleared){dot(home,0x42FF9D);dot(home-1,0x0A5030);}
   }
 
   void addToJsonState(JsonObject &root) override {
-    JsonObject state = root["leddefender"];
-    if (state.isNull()) state = root.createNestedObject("leddefender");
-    state["phase"] = (int)game.phase;
-    state["score"] = game.score;
-    state["best"] = highscore;
-    state["lives"] = game.lives;
-    state["combo"] = game.combo;
-    state["spawned"] = game.spawned;
-    state["total"] = DefenderCore::TOTAL;
-    JsonArray enemies = state.createNestedArray("enemies");
-    for (const auto &e : game.enemies) if (e.alive) {
-      JsonArray item = enemies.createNestedArray();
-      item.add((int)roundf(e.x)); item.add(e.color);
+    JsonObject s=root["leddefender"];
+    if(s.isNull())s=root.createNestedObject("leddefender");
+    s["phase"]=(int)game.phase;
+    s["map"]=game.map;
+    s["level"]=game.level;
+    s["score"]=game.score;
+    s["best"]=highscore[game.map];
+    s["best1"]=highscore[0];s["best2"]=highscore[1];
+    s["level1"]=highestLevel[0];s["level2"]=highestLevel[1];
+    s["bestcombo1"]=highestCombo[0];s["bestcombo2"]=highestCombo[1];
+    s["lives"]=game.lives;
+    s["combo"]=game.combo;
+    s["spawned"]=game.spawned;
+    s["total"]=game.total;
+    s["colors"]=game.colorsCount();
+    s["waveClear"]=game.waveCleared;
+    JsonArray enemies=s.createNestedArray("enemies");
+    for(const auto &e:game.enemies)if(e.alive){
+      JsonArray a=enemies.createNestedArray();
+      a.add(int(roundf(e.x)));a.add(e.color);a.add(e.kind);a.add(e.direction);a.add(e.hp);
     }
-    JsonArray shots = state.createNestedArray("shots");
-    for (const auto &s : game.shots) if (s.alive) {
-      JsonArray item = shots.createNestedArray();
-      item.add((int)roundf(s.x)); item.add(s.color);
+    JsonArray shots=s.createNestedArray("shots");
+    for(const auto &p:game.shots)if(p.alive){
+      JsonArray a=shots.createNestedArray();
+      a.add(int(roundf(p.x)));a.add(p.color);
+    }
+    JsonArray portals=s.createNestedArray("portals");
+    for(const auto &p:game.portals)if(p.active){
+      JsonArray a=portals.createNestedArray();
+      a.add((int)p.kind);a.add((int)roundf(p.entry));a.add((int)roundf(p.exit));
+      a.add(p.barStart);a.add(p.count);
+      a.add(p.kind==DefenderCore::TIMED?
+        int(ceilf(p.count*p.remaining/p.duration)):int(p.hp));
     }
   }
 
   void readFromJsonState(JsonObject &root) override {
-    if (!initialized) return;
-    JsonObject state = root["leddefender"];
-    if (state.isNull()) return;
-    const char *cmd = state["cmd"] | "";
-    if (!strcmp(cmd, "start")) {
-      // Game only operates when WLED is already powered on; no K4 or light changes.
-      if (bri == 0) return;
-      game.start(millis());
-      lastClientMs = millis();
-      strip.trigger();
-    } else if (!strcmp(cmd, "stop")) {
-      game.stop();
-      strip.trigger();
-    } else if (!strcmp(cmd, "shoot")) {
-      lastClientMs = millis();
-      game.shoot((uint8_t)(state["color"] | 0), millis());
-    } else if (!strcmp(cmd, "ping")) {
-      lastClientMs = millis();
+    if(!initialized)return;
+    JsonObject s=root["leddefender"];
+    if(s.isNull())return;
+    const char *cmd=s["cmd"]|"";
+    if(!strcmp(cmd,"start")){
+      // Does not switch K4 or alter any saved WLED state.
+      if(bri==0)return;
+      game.start((uint8_t)(s["map"]|0),millis());
+      lastClientMs=millis();strip.trigger();
+    } else if(!strcmp(cmd,"stop")){
+      game.stop();strip.trigger();
+    } else if(!strcmp(cmd,"shoot")){
+      lastClientMs=millis();
+      game.shoot((uint8_t)(s["color"]|0),(uint8_t)(s["side"]|0),millis());
+    } else if(!strcmp(cmd,"ping")){
+      lastClientMs=millis();
     }
   }
 };
-
 static LedDefenderMod ledDefender;
 REGISTER_USERMOD(ledDefender);
