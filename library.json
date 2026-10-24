@@ -1,0 +1,8 @@
+{
+  "name": "led_defender",
+  "version": "1.0.0",
+  "description": "LED Defender local game for WLED ESP32",
+  "build": {"libArchive": false},
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}
