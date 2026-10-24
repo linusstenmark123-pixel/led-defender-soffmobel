@@ -4,44 +4,81 @@ name: Build LED Defender for WLED ESP32
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout project
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install PlatformIO
-        run: python -m pip install platformio
-
-      - name: Fetch exact WLED version
-        run: git clone -b v16.0.1 --depth 1 https://github.com/wled/WLED.git WLED
-
-      - name: Add usermod and build configuration
         run: |
-          cp -R usermods/led_defender WLED/usermods/led_defender
-          cp platformio_override.ini WLED/platformio_override.ini
+          python -m pip install "platformio==6.1.19"
+          pio --version
+
+      - name: Download WLED
+        run: |
+          git clone --depth 1 --branch v16.0.1 \
+            https://github.com/wled/WLED.git WLED
+
+      - name: Verify project files
+        run: |
+          test -f platformio_override.ini
+          test -f usermods/led_defender/DefenderCore.h
+          test -f usermods/led_defender/led_defender.cpp
+          test -f usermods/led_defender/library.json
+          test -f usermods/led_defender/page_gz.h
+
+          echo "All required files found"
+
+      - name: Install LED Defender usermod
+        run: |
+          rm -rf WLED/usermods/led_defender
+          mkdir -p WLED/usermods/led_defender
+
+          cp -a usermods/led_defender/. \
+            WLED/usermods/led_defender/
+
+          cp platformio_override.ini \
+            WLED/platformio_override.ini
+
+          echo "Checking installed files:"
+          ls -la WLED/usermods/led_defender/
+
+          test -f WLED/usermods/led_defender/library.json
+          test -f WLED/usermods/led_defender/DefenderCore.h
+          test -f WLED/usermods/led_defender/led_defender.cpp
+          test -f WLED/usermods/led_defender/page_gz.h
+
+          echo "LED Defender installed correctly"
 
       - name: Build firmware
         run: |
           cd WLED
           pio run -e led_defender_esp32
 
-      - name: Prepare OTA image
+      - name: Prepare firmware
         run: |
           mkdir -p output
-          cp WLED/.pio/build/led_defender_esp32/firmware.bin output/LED_Defender_WLED_16.0.1_ESP32.bin
 
-      - uses: actions/upload-artifact@v4
+          cp \
+            WLED/.pio/build/led_defender_esp32/firmware.bin \
+            output/LED_Defender_ESP32.bin
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
         with:
-          name: LED-Defender-ESP32-Firmware
-          path: output/LED_Defender_WLED_16.0.1_ESP32.bin
+          name: LED-Defender-Firmware
+          path: output/LED_Defender_ESP32.bin
           if-no-files-found: error
           
