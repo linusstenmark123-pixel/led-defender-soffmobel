@@ -1,0 +1,47 @@
+
+name: Build LED Defender for WLED ESP32
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: python -m pip install platformio
+
+      - name: Fetch exact WLED version
+        run: git clone -b v16.0.1 --depth 1 https://github.com/wled/WLED.git WLED
+
+      - name: Add usermod and build configuration
+        run: |
+          cp -R usermods/led_defender WLED/usermods/led_defender
+          cp platformio_override.ini WLED/platformio_override.ini
+
+      - name: Build firmware
+        run: |
+          cd WLED
+          pio run -e led_defender_esp32
+
+      - name: Prepare OTA image
+        run: |
+          mkdir -p output
+          cp WLED/.pio/build/led_defender_esp32/firmware.bin output/LED_Defender_WLED_16.0.1_ESP32.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LED-Defender-ESP32-Firmware
+          path: output/LED_Defender_WLED_16.0.1_ESP32.bin
+          if-no-files-found: error
+          
